@@ -1,0 +1,10 @@
+# Core Server & Protocol
+mcp>=1.0.0
+starlette>=0.36.0
+uvicorn>=0.27.0
+python-dotenv>=1.0.0
+
+# Google Cloud SDKs
+google-cloud-servicehealth>=0.1.0
+google-cloud-service-usage>=1.4.0
+google-cloud-asset>=3.20.0

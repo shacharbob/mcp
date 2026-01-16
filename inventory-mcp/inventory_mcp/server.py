@@ -72,31 +72,71 @@ async def search_assets(
     query: str, 
     scope: str = "organizations/123456789", 
     asset_types: list[str] = ["compute.googleapis.com/Instance"],
+    page_size: int = 50,
+    page_token: str = None,
     token: str = None
-) -> list[dict]:
-    """Search for GCP assets using Cloud Asset Inventory."""
+) -> dict:
+    """Search for GCP assets using Cloud Asset Inventory.
+    
+    Returns:
+        dict: {
+            "resources": list[dict],
+            "next_page_token": str | None
+        }
+    """
     creds = create_creds(token)
     client = asset_v1.AssetServiceAsyncClient(credentials=creds)
     request = asset_v1.SearchAllResourcesRequest(
         scope=scope,
         query=query,
         asset_types=asset_types,
-        page_size=50 # [PERF] Enforce page size
+        page_size=page_size,
+        page_token=page_token
     )
     
     results = []
-    # [PERF] Use the async iterator
-    async for page in await client.search_all_resources(request=request):
-        results.append({
-            "name": page.name,
-            "asset_type": page.asset_type,
-            "display_name": page.display_name,
-            "project": page.project,
-            "state": page.state,
-        })
-        if len(results) >= 50: break
+    # Using the raw response to get the token, manual iteration for page
+    page_result = await client.search_all_resources(request=request)
+    # The async iterator flattens pages. We need strictly ONE page.
+    # Actually, the python client usually auto-pages. 
+    # To Control page size strictly and get token, we use `byte_stream` or just `pages` property if available?
+    # AssetServiceAsyncClient.search_all_resources returns SearchAllResourcesPager
+    # We can iterate 'pages' property on it? No, async pager is slightly different.
     
-    return results
+    # Correct Paging in Google Async Client:
+    # The `await client.search_all_resources` returns an AsyncPager. 
+    # Calling `responses` roughly gives access to pages?
+    # Simpler: The client abstracts pages. BUT we want to stop after one page and give the token.
+    # Workaround: We rely on the request `page_size`. The client *should* fetch one page if we iterate, 
+    # but `async for` will fetch next.
+    # We can use `pages` property of the pager.
+    
+    # Standard Paging Pattern for Async Pagers in Python:
+    # async for page in await client.search_all_resources(request=request).pages:
+    #     ... process page ...
+    #     next_token = page.next_page_token
+    #     break
+    
+    pager = await client.search_all_resources(request=request)
+    
+    # Correct way to get a single page from AsyncPager
+    async for page in pager.pages:
+        for resource in page.search_all_resources_response.results:
+            results.append({
+                "name": resource.name,
+                "asset_type": resource.asset_type,
+                "display_name": resource.display_name,
+                "project": resource.project,
+                "state": resource.state,
+            })
+        
+        return {
+            "resources": results,
+            "next_page_token": page.next_page_token if page.next_page_token else None
+        }
+    
+    # If no pages
+    return {"resources": [], "next_page_token": None}
 
 # --- ENTRYPOINT ---
 

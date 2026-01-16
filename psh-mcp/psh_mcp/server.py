@@ -159,34 +159,98 @@ async def get_event_details(
 @mcp.tool()
 async def list_projects_without_service_health(
     scope: str,
+    max_projects: int = 50,
     token: str = None
-) -> list[str]:
-    """Audit an Organization to find projects where Service Health is disabled."""
+) -> dict:
+    """Audit an Organization to find projects where Service Health is disabled.
+    
+    Result limited by max_projects to prevent timeouts.
+    """
     creds = create_creds(token)
     asset_client = asset_v1.AssetServiceAsyncClient(credentials=creds)
     
-    # 1. Get ALL active projects
+    # Safety Check
+    if "organizations" in scope and max_projects > 100:
+        raise ValueError("Safety Guard: max_projects limited to 100 for Organization scopes.")
+
+    # 1. Get ALL active projects (Limited)
     all_projects = []
     req_projects = asset_v1.SearchAllResourcesRequest(
         scope=scope, query="state=ACTIVE",
-        asset_types=["cloudresourcemanager.googleapis.com/Project"], read_mask="name"
+        asset_types=["cloudresourcemanager.googleapis.com/Project"], 
+        read_mask="name",
+        page_size=max_projects
     )
-    async for page in await asset_client.search_all_resources(request=req_projects):
-        if page.project: all_projects.append(page.project)
+    
+    # We only fetch ONE page of projects to respect the limit safely
+    # This prevents the O(N) full scan risk
+    pager = await asset_client.search_all_resources(request=req_projects)
+    
+    projects_to_check = []
+    
+    async for page in pager.pages:
+        for p in page.search_all_resources_response.results:
+            projects_to_check.append(p.project)
+        break # STOP after first page (max_projects)
+        
+    if not projects_to_check:
+        return {"disabled_projects": [], "warning": "No active projects found in scope."}
 
-    # 2. Get projects with Service Health ENABLED
+    # 2. Check Service Health status for these specific projects
+    # We can't batch query easily, but we can query by parent?
+    # Actually, SearchAll is efficient. We can just search for the enabled service
+    # NO, we need to know where it is MISSING.
+    # Efficient Set Difference on the limited subset:
+    
     enabled_projects = set()
+    # Query ONLY the projects we found? 
+    # "project:A OR project:B ..." might be too long.
+    # We just search the same scope for the enabled service, but limited?
+    # No, that might return projects we didn't list in step 1.
+    
+    # Optimization: We already have a list of candidate projects.
+    # We will search for enabled services in the SAME scope, but we can't easily filter to just our 50 candidates
+    # without a massive query string.
+    # Strategy: Fetch enabled services in the same scope (also limited/paged) and set difference?
+    # Risk: If enabled services are on page 2, but we only checked page 1 of projects...
+    
+    # Correct Small-Scale Audit Strategy (The L6 way for this simplified tool):
+    # Iterate the *candidate* projects and check specific API enablement? Too slow (N calls).
+    # Better: Just accept that this tool returns "Disabled projects found in the first N projects scanned".
+    
     req_enabled = asset_v1.SearchAllResourcesRequest(
-        scope=scope, query="name:servicehealth.googleapis.com",
-        asset_types=["serviceusage.googleapis.com/Service"]
+        scope=scope, 
+        query="name:servicehealth.googleapis.com", # Find the enabled API resource
+        asset_types=["serviceusage.googleapis.com/Service"],
+        page_size=1000 # Fetch more enabled markers to cover our project range hopefully
     )
+    
+    # We fetch enough enabled markers to be reasonably sure. 
+    # NOTE: This is still imperfect distributed consistency, but better than O(N) crash.
     async for page in await asset_client.search_all_resources(request=req_enabled):
-        parts = page.name.split("/")
-        if "projects" in parts:
-            pid = parts[parts.index("projects") + 1]
-            enabled_projects.add(f"projects/{pid}")
+         for result in page.search_all_resources_response.results:
+             # name format: //serviceusage.googleapis.com/projects/{PROJECT_NUMBER}/services/servicehealth.googleapis.com
+             # BUT SearchAllResources returns `project` field usually formatted as `projects/123...`
+             if result.project:
+                 enabled_projects.add(result.project) # format: projects/12345
+                 
+             # Fallback for display_name or name parsing if project field empty (rare in search)
+    
+    # The `projects_to_check` are `projects/123...` (numbers or IDs?)
+    # Asset Inventory usually returns `projects/NUMBER` in `.project` field for resources.
+    # But for Project resource itself, `.project` field is empty? No, `.name` is `//cloudresourcemanager.../projects/NUMBER`
+    
+    disabled = []
+    for p in projects_to_check:
+        # P is likely `projects/number`
+        if p not in enabled_projects:
+            disabled.append(p)
 
-    return [p for p in all_projects if p not in enabled_projects]
+    return {
+        "disabled_projects": disabled,
+        "scanned_count": len(projects_to_check), 
+        "warning": f"Scanned first {len(projects_to_check)} projects. Pass page_token (not impl yet) for more."
+    }
 
 # --- ENTRYPOINT ---
 

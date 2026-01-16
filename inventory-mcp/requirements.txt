@@ -1,6 +1,4 @@
 fastmcp>=2.10.0
-google-cloud-servicehealth>=0.1.0
-google-cloud-service-usage>=1.4.0
 # [FIX] Pin below 4.0.0 to avoid namespace namespace conflicts
 google-cloud-asset>=3.20.0,<4.0.0
 # [FIX] Remove core pin to let the library resolve its own dependencies

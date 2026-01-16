@@ -4,7 +4,8 @@ This repository contains my personal collection of [Model Context Protocol (MCP)
 
 ## Projects
 
-- **[psh-mcp](./psh-mcp)**: A Python-based MCP server.
+- **[psh-mcp](./psh-mcp)**: Google Cloud Personal Service Health MCP server.
+- **[inventory-mcp](./inventory-mcp)**: Google Cloud Asset Inventory MCP server.
 
 ## Disclaimer
 

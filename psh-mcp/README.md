@@ -46,6 +46,51 @@ sequenceDiagram
 
 ---
 
+## 🔐 Authentication
+
+This server enforces **Request-Scoped Authentication**.
+
+*   **Mechanism:** "Pass-Through Identity". The server does not use its own Service Account to access data.
+*   **Header:** Clients MUST send `Authorization: Bearer <ACCESS_TOKEN>`.
+*   **Token Type:** This must be a **Google OAuth2 Access Token** (NOT an OIDC ID Token).
+*   **Scope:** The token must have the `https://www.googleapis.com/auth/cloud-platform` scope.
+
+### 🔌 Client Configuration
+
+To use this with **Claude Desktop**, **Antigravity**, or other MCP clients:
+
+```json
+{
+  "mcpServers": {
+    "gcp-service-health": {
+      "url": "https://[YOUR_CLOUD_RUN_URL]/mcp",
+      "transport": "sse",
+      "headers": {
+        "Authorization": "Bearer <YOUR_ACCESS_TOKEN>",
+        "Accept": "text/event-stream"
+      }
+    }
+  }
+}
+```
+
+> **Note**: Modern FastMCP requires `Accept: text/event-stream` for the handshake.
+
+### 🔐 Hybrid Authentication (Fallback)
+If your client cannot send headers (or strips them), you can pass the token as an argument:
+`list_active_events(project_id="...", token="ya29...")`
+
+### 🗝️ How to Obtain the Token
+
+For local development or testing, generating a short-lived token:
+
+```bash
+gcloud auth print-access-token
+```
+> **Note:** This token expires in 1 hour.
+
+---
+
 ## 🚀 Deployment
 
 ### Option 1: Docker (Local)
@@ -54,55 +99,37 @@ sequenceDiagram
     ```bash
     docker build -t psh-monitor .
     ```
-2.  **Run (with Default Credentials)**:
+2.  **Run**:
     ```bash
-    docker run -p 8080:8080 \
-      -v ~/.config/gcloud:/root/.config/gcloud \
-      psh-monitor
+    docker run -p 8080:8080 psh-monitor
     ```
 
 ### Option 2: Google Cloud Run (Recommended)
 
 Deploy as a secure, serverless container.
 
+**IAM Permissions (Critical):**
+The **End User** (the identity behind the Access Token) needs the following IAM role on the target project(s):
+*   `roles/servicehealth.viewer`
+
+The **Cloud Run Service Account** only needs permission to write logs (and basic run permissions).
+
 ```bash
-# 1. Create a Service Account
-gcloud iam service-accounts create mcp-monitor
-
-# 2. Grant Read-Only Permissions
-gcloud projects add-iam-policy-binding YOUR_PROJECT \
-    --member="serviceAccount:mcp-monitor@YOUR_PROJECT.iam.gserviceaccount.com" \
-    --role="roles/servicehealth.viewer"
-
-# 3. Deploy
+# 1. Deploy
 gcloud run deploy psh-monitor \
     --source . \
-    --service-account mcp-monitor@YOUR_PROJECT.iam.gserviceaccount.com \
+    --start-command="python psh_mcp/server.py" \
     --allow-unauthenticated
 ```
+*(Note: `--allow-unauthenticated` allows the HTTP Handshake, but the Application Logic checks the Bearer Token)*
 
 ---
 
-## 🔌 Client Configuration
-
-To use this with **Claude Desktop** or other MCP clients:
-
-```json
-{
-  "mcpServers": {
-    "gcp-health": {
-      "url": "[https://YOUR-CLOUD-RUN-URL.a.run.app/mcp](https://YOUR-CLOUD-RUN-URL.a.run.app/mcp)",
-      "transport": "sse"
-    }
-  }
-}
-```
-
 ## 🛡️ Security Features
 
-* **Read-Only Design**: This server explicitly includes **no write capabilities**. It cannot modify your infrastructure.
-* **Input Validation**: Strict regex validation on Project IDs to prevent injection.
-* **Narrative Sanitization**: Removes internal Google metadata fields before sending data to the LLM.
+*   **Read-Only Design**: This server explicitly includes **no write capabilities**. It cannot modify your infrastructure.
+*   **Input Validation**: Strict regex validation on Project IDs to prevent injection.
+*   **Narrative Sanitization**: Removes internal Google metadata fields before sending data to the LLM.
 
 ## 🤝 Contributing
 
